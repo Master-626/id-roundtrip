@@ -7,6 +7,8 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import pytest
+
 from id_roundtrip import __version__
 from id_roundtrip.__main__ import main
 
@@ -106,6 +108,9 @@ def test_wheel_builds_on_declared_setuptools(tmp_path):
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'license = {text = "MIT"}' in pyproject
     assert f'version = "{__version__}"' in pyproject
+    # --no-build-isolation uses the interpreter's setuptools. GitHub's
+    # setup-python images do not ship it; the dev extra does.
+    pytest.importorskip("setuptools")
     result = subprocess.run(
         [
             sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
