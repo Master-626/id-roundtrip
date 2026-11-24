@@ -9,7 +9,8 @@ telemetry, repairs, guessed padding, or numeric conversions.
 把未经表格软件改写的原始 CSV 与回传 CSV 对照，按独立、稳定的行键检查指定
 编号列是否原样保留。可发现前导零丢失、长编号改写、日期状编号变化，以及行
 增删。允许排序和列顺序变化。不自动补零或猜测修复，不声称能证明变化是 Excel
-造成的。先保留原始文件，使用不会被改写的文本行键（如 `row-a`）。
+造成的。变更单元格带有不含原值的差异类别（如前导零、空白、大小写）。先保留
+原始文件，使用不会被改写的文本行键（如 `row-a`）。
 
 ## Why this exists
 
@@ -30,7 +31,9 @@ id-roundtrip examples/reference.csv examples/changed.csv --key row_key --field s
 ```
 
 The example exits **1** and reports four changed cells, including their reference
-and observed record numbers. It intentionally fails. For a passing example:
+and observed record numbers. The labels are two `leading_zeros` and two `replaced`.
+The JSON does not include the identifier text. It intentionally fails. For a passing
+example:
 
 ```sh
 id-roundtrip examples/reference.csv examples/reference.csv --key row_key --field sample_id --field barcode
@@ -40,9 +43,11 @@ Repeat `--key` for a composite key. Repeat `--field` for the identifier columns.
 Use `--delimiter tab` or `--delimiter semicolon` for explicitly chosen dialects;
 `--observed-delimiter` overrides only the returned file's delimiter. No guessing.
 
-JSON goes to stdout. Exit status: **0** exact preservation with no blank checked
+JSON goes to stdout (`schema_version` 2). Exit status: **0** exact preservation with no blank checked
 identifiers; **1** changes, blank checked identifiers or added/missing rows;
-**2** invalid input, ambiguous keys or unreadable file. The CLI creates no files.
+**2** invalid input, ambiguous keys or unreadable file. If a pipe closes stdout
+early, the process still exits **0** or **1** from that result and does not claim
+the file was unreadable. The CLI creates no files.
 If redirecting output in a shell, choose a fresh report path, never either input:
 shell redirection can truncate a file *before this program starts*.
 
@@ -66,9 +71,17 @@ assert report['ok']
 - Row/column order may change. Extra unchecked columns are ignored, by design.
 - Reports contain SHA-256 hashes of input bytes and one-based **data record**
   numbers, not physical line numbers. Multiline quoted records count once.
+- Each changed cell has a `kind` from a fixed list: `whitespace` (only surrounding
+  whitespace), `case` (`str.lower` equal, not full casefold), `blanked` (one side
+  empty or whitespace-only), `leading_zeros` (both sides ASCII digits and the same
+  after removing leading `0`s, including `0` versus `00`), `normalization` (NFC
+  equal), or `replaced` (anything else, including mixed differences). Labels are
+  not repairs and are not evidence a spreadsheet caused the change.
+- A cell can be listed in both `changed_cells` and `blank_identifier_cells`.
+  Those entries are separate objects.
 - Reports omit identifier/key *values* and file paths, but include column names,
-  row counts, hashes and positions. This is data minimization, **not anonymization**.
-  Treat reports as potentially sensitive; review before sharing.
+  row counts, hashes, positions and the `kind` label. This is data minimization,
+  **not anonymization**. Treat reports as potentially sensitive; review before sharing.
 - Duplicate keys, missing selected columns, ragged rows, blank records, malformed
   quoting, invalid UTF-8 and NUL bytes stop the audit. Both sides must be valid.
 
@@ -104,12 +117,18 @@ sort/convert operations rather than this audit; no existing repository was chang
 ## Development
 
 ```sh
-PYTHONPATH=src python -m unittest discover -s tests -v
-python -m pip wheel --no-deps . -w dist
+python -m pip install -e ".[dev]"
+ruff check .
+pytest
+python -m pip wheel --no-deps --no-build-isolation . -w dist
 ```
 
-On Windows, install the package first, then run `python -m unittest discover -s tests -v`.
+`pytest` collects the original unittest modules and the pytest modules. On Windows,
+install the package first so `python -m id_roundtrip` resolves. GitHub Actions runs
+`ruff check` and `pytest` on the platforms listed in `.github/workflows/test.yml`.
 Tests cover reordered rows/headers, exact text regressions, composite keys, blank
 and malformed inputs, BOM/multiline data, delimiter differences, CLI status codes,
-input immutability, value minimization and deterministic randomized permutations.
-See VALIDATION.md for the environments actually run. MIT license.
+input immutability, value minimization, difference labels, closed-pipe exit status
+and deterministic randomized permutations.
+See VALIDATION.md for the environments actually run before this maintenance change.
+MIT license.
