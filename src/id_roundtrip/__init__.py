@@ -4,8 +4,19 @@ import hashlib
 import io
 import os
 import stat
+import unicodedata
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
+
+# Closed vocabulary for changed_cells[].kind. Labels describe the text only.
+DIFFERENCE_KINDS = frozenset({
+    "whitespace",
+    "case",
+    "blanked",
+    "leading_zeros",
+    "normalization",
+    "replaced",
+})
 
 
 class AuditError(ValueError):
@@ -74,11 +85,38 @@ def _read(path, keys, fields, delimiter):
     return rows, hashlib.sha256(raw).hexdigest()
 
 
+def _ascii_digits(value):
+    return bool(value) and value.isascii() and value.isdigit()
+
+
+def _difference_kind(left, right):
+    """Label an unequal pair without echoing either string or parsing numbers.
+
+    ``case`` uses ``str.lower``, not ``str.casefold``, so expansions such as
+    ``ß`` versus ``ss`` stay ``replaced``. ``leading_zeros`` applies only when
+    both sides are ASCII digits (including ``0`` versus ``00``).
+    """
+    if left == right:
+        raise ValueError("difference kind requires unequal values")
+    if left.strip() == right.strip():
+        return "whitespace"
+    if left.lower() == right.lower():
+        return "case"
+    if not left.strip() or not right.strip():
+        return "blanked"
+    if _ascii_digits(left) and _ascii_digits(right) and left.lstrip("0") == right.lstrip("0"):
+        return "leading_zeros"
+    if unicodedata.normalize("NFC", left) == unicodedata.normalize("NFC", right):
+        return "normalization"
+    return "replaced"
+
+
 def audit(reference, observed, *, keys, fields, delimiter=",", observed_delimiter=None):
     """Compare UTF-8 CSVs as exact strings, keyed independently of row order.
 
     Output excludes cell values and key values; record numbers are one-based
-    data records (not physical lines). Does not modify either input.
+    data records (not physical lines). Each changed cell includes a ``kind``
+    from ``DIFFERENCE_KINDS``. Does not modify either input.
     """
     keys, fields = _columns(keys, "keys"), _columns(fields, "fields")
     if set(keys) & set(fields):
@@ -94,13 +132,16 @@ def audit(reference, observed, *, keys, fields, delimiter=",", observed_delimite
             continue
         other_record, other_values = after[key]
         for field, left, right in zip(fields, values, other_values):
+            # Separate dicts: one cell can be both blank and changed.
             location = {"field": field, "reference_record": record, "observed_record": other_record}
             if not left.strip() or not right.strip():
-                blank.append(location)
+                blank.append(dict(location))
             if left != right:
-                changes.append(location)
+                changed = dict(location)
+                changed["kind"] = _difference_kind(left, right)
+                changes.append(changed)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": not (missing or added or changes or blank),
         "reference_sha256": before_hash,
         "observed_sha256": after_hash,
